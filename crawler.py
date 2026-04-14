@@ -703,8 +703,6 @@ def run(api_tasks=None, custom_run_id=None, auto_resume=False, time_to_resume=60
                 if target_page > 1:
                     log.info(f"Đang tua nhanh tới trang đang làm dở: Trang {target_page}...")
                     report(f"Đang tua nhanh tới trang đang làm dở: Trang {target_page}...")
-                    human_navigate_to_bottom(page)
-                    human_wait_with_jitter(page, 1.0, 2.0)
                     
                     while current_ui_page < target_page:
                         if check_cancel_callback and check_cancel_callback():
@@ -712,6 +710,7 @@ def run(api_tasks=None, custom_run_id=None, auto_resume=False, time_to_resume=60
                             stop_reason_msg = "Người dùng chủ động hủy ngang tiến trình."
                             break
                         if check_kicked_out(page): break
+                        human_navigate_to_bottom(page)
                         human_wait_with_jitter(page, 0.5, 1.0)
                         
                         skeleton = page.locator(Selectors.SKELETON_LOADER)
