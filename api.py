@@ -235,4 +235,84 @@ async def cancel_task(task_id: str):
     
     return {"status": "success", "message": "Đã gửi yêu cầu dừng. Vui lòng đợi trong giây lát để hệ thống xử lý dữ liệu hiện có."}
 
+@app.get("/api/v1/task/{task_id}/page-id-info")
+async def get_page_id_info(task_id: str):
+    # 1. Kiểm tra trạng thái Task (ưu tiên RAM, fallback xuống Database nếu server vừa restart)
+    task_status = None
+    
+    if task_id in TASKS_DB:
+        task_status = TASKS_DB[task_id].get("status")
+    else:
+        try:
+            conn = psycopg2.connect(**DB_CONFIG)
+            cursor = conn.cursor()
+            cursor.execute("SELECT status FROM crawl_tasks WHERE upstream_task_id = %s", (task_id,))
+            result = cursor.fetchone()
+            
+            if not result:
+                raise HTTPException(status_code=404, detail="Không tìm thấy task_id trong RAM lẫn Database.")
+            
+            db_status = str(result[0]).strip().upper()
+            task_status = "completed" if db_status == 'COMPLETED' else db_status.lower()
+            
+        except psycopg2.Error as e:
+            log.error(f"Lỗi truy vấn DB khi lấy info Page ID: {e}")
+            raise HTTPException(status_code=500, detail="Lỗi kết nối kiểm tra dữ liệu từ Database.")
+        finally:
+            if 'cursor' in locals(): cursor.close()
+            if 'conn' in locals(): conn.close()
+
+    # 2. Ràng buộc: Chỉ trả về data khi task đã chạy xong hoàn toàn
+    if task_status != "completed":
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Task hiện tại đang ở trạng thái '{task_status}', chưa hoàn thành."
+        )
+
+    # 3. Đọc dữ liệu thô từ file raw_bundle
+    raw_bundle_path = os.path.join("crawl_json", f"raw_bundle_{task_id}.json")
+    if not os.path.exists(raw_bundle_path):
+        raise HTTPException(
+            status_code=404, 
+            detail="Không tìm thấy file checkpoint dữ liệu của task này trên ổ cứng."
+        )
+
+    try:
+        with open(raw_bundle_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Lỗi hệ thống khi đọc file dữ liệu: {str(e)}"
+        )
+
+    # 4. Xử lý và mapping dữ liệu theo chuẩn JSON chuyên nghiệp
+    apps_data = []
+    all_page_ids_list = []
+
+    for app in data.get("apps", []):
+        app_id = app.get("app_id")
+        
+        raw_page_ids = app.get("page_ids", [])
+        extracted_ids = [item["page_id"] for item in raw_page_ids if "page_id" in item]
+
+        if not extracted_ids:
+            page_ids_value = None
+        else:
+            page_ids_value = extracted_ids
+            all_page_ids_list.extend(extracted_ids)
+
+        apps_data.append({
+            "app_id": app_id,
+            "page_ids": page_ids_value
+        })
+
+    # Lọc trùng lặp mảng tổng (bảo toàn thứ tự cào được)
+    all_page_ids_unique = list(dict.fromkeys(all_page_ids_list))
+
+    return {
+        "apps_data": apps_data,
+        "all_page_ids": all_page_ids_unique
+    }
+
 # uvicorn api:app --reload
