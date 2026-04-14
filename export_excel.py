@@ -7,7 +7,7 @@ from custom_logger import log
 def json_to_excel(json_filepath: str) -> str:
     """Đọc file final_result JSON và xuất ra file Excel."""
     
-    # 1. Định nghĩa schema chuẩn (các cột bắt buộc phải có)
+    # 1. Định nghĩa schema chuẩn (Thêm duplicate_count)
     DEFAULT_COLUMNS = [
         "app_id", "filters_applied", "ad_id", "description", 
         "description_language", "description_translated", "duration", 
@@ -15,7 +15,7 @@ def json_to_excel(json_filepath: str) -> str:
         "impression", "language", "link_youtube", "network", 
         "original_post_link", "region", "start_date", 
         "top_10_percent_creative", "top_1_percent_creative", 
-        "transcript", "transcript_language"
+        "transcript", "transcript_language", "transcript_translated", "duplicate_count"
     ]
     
     # 2. Tạo thư mục crawl_results nếu chưa có
@@ -35,8 +35,9 @@ def json_to_excel(json_filepath: str) -> str:
     apps = data.get("apps", [])
     
     rows = []
+    link_counts = {} # Dictionary để đếm tần suất link cục bộ
     
-    # 3. Bóc tách dữ liệu
+    # 3. Bóc tách dữ liệu và đếm tần suất link
     for app in apps:
         app_id = app.get("app_id")
         filters_applied = ", ".join(app.get("filters_applied", []))
@@ -52,26 +53,42 @@ def json_to_excel(json_filepath: str) -> str:
                 "filters_applied": filters_applied
             }
             row.update(gemini_data)
+            
+            # Xử lý đếm link (Bỏ qua rỗng/null)
+            link = row.get("original_post_link")
+            if link and str(link).strip():
+                clean_link = str(link).strip()
+                link_counts[clean_link] = link_counts.get(clean_link, 0) + 1
+                
             rows.append(row)
 
-    # 4. Tạo DataFrame với cơ chế giữ form
+    # 4. Gán giá trị duplicate_count cục bộ cho từng dòng
+    for row in rows:
+        link = row.get("original_post_link")
+        if link and str(link).strip():
+            clean_link = str(link).strip()
+            row["duplicate_count"] = link_counts[clean_link]
+        else:
+            # Nếu không có link (rỗng/null) -> Mặc định là 1 (không gộp chung)
+            row["duplicate_count"] = 1
+
+    # 5. Tạo DataFrame với cơ chế giữ form
     if not rows:
         log.warning("Không có dữ liệu quảng cáo. Tạo file Excel với cấu trúc cột mặc định.")
-        # Tạo DataFrame rỗng nhưng có sẵn các cột
         df = pd.DataFrame(columns=DEFAULT_COLUMNS)
     else:
         df = pd.DataFrame(rows)
-        # Đảm bảo file Excel luôn đủ cột và đúng thứ tự, kể cả khi Gemini trả thiếu key
+        # Đảm bảo file Excel luôn đủ cột và đúng thứ tự
         df = df.reindex(columns=DEFAULT_COLUMNS)
     
-    # 5. Xuất ra Excel
+    # 6. Xuất ra Excel
     excel_filename = f"excel_result_{run_id}.xlsx"
     excel_filepath = os.path.join(output_dir, excel_filename)
     
     df.to_excel(excel_filepath, index=False)
     log.info(f"Hoàn thành xuất Excel tại: {excel_filepath}")
     
-    # 6. Chỉ đẩy vào Database nếu có dữ liệu thực tế
+    # 7. Đẩy vào Database
     if rows:
         log.info("Bắt đầu đẩy dữ liệu từ Excel vào Database (PostgreSQL)...")
         try:
@@ -83,7 +100,6 @@ def json_to_excel(json_filepath: str) -> str:
     
     log.info("Hoàn thành toàn bộ Pipeline!")
     return excel_filepath
-
 
 def export_page_id_excel(json_filepath: str) -> str:
     """Đọc file raw_bundle JSON và xuất ra file Excel chứa Page IDs theo từng cột."""
@@ -109,10 +125,9 @@ def export_page_id_excel(json_filepath: str) -> str:
         if page_ids:
             export_dict[app_id] = page_ids
 
-    # Khởi tạo DataFrame phù hợp với tình trạng dữ liệu
     if not export_dict:
         log.warning("Không có Page ID nào hoặc mảng apps rỗng. Tạo file Excel trắng bóc.")
-        df = pd.DataFrame()  # DataFrame hoàn toàn trống
+        df = pd.DataFrame()
     else:
         df = pd.DataFrame(dict([ (k, pd.Series(v)) for k, v in export_dict.items() ]))
     

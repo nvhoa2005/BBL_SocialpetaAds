@@ -19,7 +19,6 @@ DB_CONFIG = {
 }
 
 def parse_impressions(val):
-    """Chuyển đổi text thành số nguyên bigint"""
     if pd.isna(val) or not str(val).strip():
         return 0
     val_str = str(val).upper().replace(',', '').replace('+', '').strip()
@@ -33,54 +32,67 @@ def parse_impressions(val):
         return 0
 
 def parse_run_duration(val):
-    """Trích xuất con số từ '93Days', '1Day' -> 93, 1"""
     if pd.isna(val):
         return None
     match = re.search(r'\d+', str(val))
     return int(match.group()) if match else None
 
 def parse_countries(val):
-    """
-    Tách chuỗi 'A/B/C' hoặc '["A/B/C"]' thành mảng ['A', 'B', 'C']
-    Giữ nguyên tên quốc gia.
-    """
     if pd.isna(val) or not str(val).strip():
         return []
-        
-    # 1. Dọn dẹp các ký tự thừa ở 2 đầu (ngoặc vuông, nháy kép, nháy đơn)
     val_str = str(val).strip('[]"\' ')
-    
-    # 2. Tách chuỗi thành list (ưu tiên dấu '/', nếu không có thì thử dấu ',')
     if '/' in val_str:
         raw_list = val_str.split('/')
     else:
         raw_list = val_str.split(',')
-        
-    # 3. Xóa khoảng trắng thừa ở mỗi tên quốc gia và loại bỏ các phần tử rỗng
     clean_names = [c.strip() for c in raw_list if c.strip()]
-    
     return clean_names
 
 def get_val(row, col_name, default=None):
-    """Hàm helper để lấy giá trị từ Pandas Row, xử lý NaN thành None cho DB"""
     if col_name not in row or pd.isna(row[col_name]):
         return default
     val = row[col_name]
-    # Xử lý chuỗi rỗng
     if isinstance(val, str) and not val.strip():
         return default
     return val
 
+def update_global_duplicate_counts(cursor):
+    """
+    Hàm Post-processing: Tính toán số lần lặp toàn cục của link từ bảng adsets
+    sau đó cập nhật hồi tố lại cho cột duplicate_count trong bảng videos.
+    """
+    # 1. Gán mặc định = 1 cho các quảng cáo không có link (rỗng/null)
+    cursor.execute("""
+        UPDATE videos
+        SET duplicate_count = 1
+        FROM adsets
+        WHERE adsets.video_id = videos.id
+          AND (adsets.original_post_link IS NULL OR trim(adsets.original_post_link) = '');
+    """)
+
+    # 2. Tính tổng toàn cục & cập nhật cho các quảng cáo có link hợp lệ
+    #    (Cập nhật luôn cho tất cả các bản ghi cũ trong quá khứ)
+    cursor.execute("""
+        WITH LinkCounts AS (
+            SELECT trim(original_post_link) as clean_link, COUNT(*) as total_count
+            FROM adsets
+            WHERE original_post_link IS NOT NULL AND trim(original_post_link) != ''
+            GROUP BY trim(original_post_link)
+        )
+        UPDATE videos
+        SET duplicate_count = lc.total_count
+        FROM adsets a
+        JOIN LinkCounts lc ON trim(a.original_post_link) = lc.clean_link
+        WHERE videos.id = a.video_id;
+    """)
+
 def import_excel_to_db(file_path):
-    # Tự động nhận diện CSV hoặc Excel
     if file_path.endswith('.csv'):
         df = pd.read_csv(file_path)
     else:
         df = pd.read_excel(file_path)
 
-    # Lấy ngày hiện tại làm ngày crawl
     crawl_date = datetime.now().date()
-
     conn = psycopg2.connect(**DB_CONFIG)
     cursor = conn.cursor()
 
@@ -141,6 +153,7 @@ def import_excel_to_db(file_path):
 
                 video_url = get_val(row, 'link_youtube') or get_val(row, 'original_post_link')
                 
+                # Lưu ý: Không truyền duplicate_count ở đây vì lệnh hậu kỳ sẽ xử lý sau
                 cursor.execute("""
                     INSERT INTO videos (
                         video_url, transcript, transcript_translated, 
@@ -159,8 +172,8 @@ def import_excel_to_db(file_path):
                 top_1_pct = bool(get_val(row, 'top_1_percent_creative', False))
                 top_10_pct = bool(get_val(row, 'top_10_percent_creative', False))
                 run_duration = parse_run_duration(get_val(row, 'duration'))
-
                 impression = parse_impressions(get_val(row, 'impression'))
+                
                 cursor.execute("""
                     INSERT INTO adsets (
                         data_source, ad_id_full, crawl_date,
@@ -203,6 +216,10 @@ def import_excel_to_db(file_path):
                 conn.rollback()
                 continue 
 
+        # KÍCH HOẠT POST-PROCESSING XỬ LÝ TRÙNG LẶP TOÀN CỤC TRƯỚC KHI COMMIT
+        if success_count > 0:
+            update_global_duplicate_counts(cursor)
+
         conn.commit()
         print(f"\n--- TỔNG KẾT ---")
         print(f"Thành công: {success_count} dòng")
@@ -210,6 +227,7 @@ def import_excel_to_db(file_path):
 
     except Exception as e:
         print(f"Lỗi hệ thống nghiêm trọng: {e}")
+        conn.rollback()
     finally:
         cursor.close()
         conn.close()
