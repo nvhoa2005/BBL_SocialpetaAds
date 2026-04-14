@@ -1,0 +1,7 @@
+{
+  "app_id": "com.aigc.ushow.ichat\ncom.lightsail.alurachat",
+  "time_val": "90 Days",
+  "sort_val": "Comment",
+  "max_ads": 1,
+  "start_page": 1
+}

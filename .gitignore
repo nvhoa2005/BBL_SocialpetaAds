@@ -1,0 +1,8 @@
+venv
+.env
+__pycache__
+*.log
+*.json
+crawl_json
+crawl_results
+profile-chrome

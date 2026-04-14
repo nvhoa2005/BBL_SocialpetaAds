@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+playwright
+playwright-stealth
+pyperclip
+google-generativeai
+pydantic
+yt-dlp
+secretstorage
+cryptography
+python-dotenv
+pytubefix
+pandas 
+openpyxl
