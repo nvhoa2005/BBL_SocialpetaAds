@@ -197,8 +197,9 @@ def import_excel_to_db(file_path):
                         impression = EXCLUDED.impression,
                         ad_run_duration = EXCLUDED.ad_run_duration,
                         top_1_pct_creative = EXCLUDED.top_1_pct_creative,
-                        top_10_pct_creative = EXCLUDED.top_10_pct_creative
-                    RETURNING id;
+                        top_10_pct_creative = EXCLUDED.top_10_pct_creative,
+                        video_id = EXCLUDED.video_id, 
+                        text_id = EXCLUDED.text_id
                 """, (
                     ad_id_full, crawl_date,
                     ad_group_id, impression,
@@ -209,6 +210,7 @@ def import_excel_to_db(file_path):
                 ))
                 
                 success_count += 1
+                conn.commit()
 
             except Exception as e:
                 error_count += 1
@@ -219,8 +221,8 @@ def import_excel_to_db(file_path):
         # KÍCH HOẠT POST-PROCESSING XỬ LÝ TRÙNG LẶP TOÀN CỤC TRƯỚC KHI COMMIT
         if success_count > 0:
             update_global_duplicate_counts(cursor)
+            conn.commit()
 
-        conn.commit()
         print(f"\n--- TỔNG KẾT ---")
         print(f"Thành công: {success_count} dòng")
         print(f"Thất bại: {error_count} dòng")
