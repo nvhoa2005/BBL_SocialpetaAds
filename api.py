@@ -32,6 +32,7 @@ class CrawlRequest(BaseModel):
     auto_resume_crawl_if_fail: bool = Field(default=True)
     time_to_resume: int = Field(default=60)
     crawl_page_id: bool = Field(default=False, description="Nếu True: Chỉ cào Page ID trên Facebook, không qua Gemini, xuất Excel theo cột.")
+    no_transcript: bool = Field(default=False, description="Nếu True: Vẫn check cache, nhưng nếu Cache miss thì gán null, bỏ qua bước gọi Gemini Audio.")
 
 # Request Model để Frontend gửi quyết định
 class ResolveKickoutRequest(BaseModel):
@@ -148,7 +149,7 @@ def background_crawl_task(task_id: str, req: CrawlRequest):
             if not api_key:
                 raise Exception("Thiếu GEMINI_API_KEY trong file .env")
                 
-            final_json_path = process_bundle(raw_file_path, api_key, DEFAULT_MODEL)
+            final_json_path = process_bundle(raw_file_path, api_key, DEFAULT_MODEL, no_transcript=req.no_transcript)
             if final_json_path:
                 excel_path = json_to_excel(final_json_path)
             else:

@@ -241,7 +241,7 @@ def parse_html_with_gemini(html: str, model_name: str) -> dict:
 # ==========================================
 # 3. LUỒNG CHẠY BÓC TÁCH BUNDLE (MAIN)
 # ==========================================
-def process_bundle(input_filepath: str, api_key: str, model_name: str):
+def process_bundle(input_filepath: str, api_key: str, model_name: str, no_transcript: bool = False):
     genai.configure(api_key=api_key)
     
     with open(input_filepath, 'r', encoding='utf-8') as f:
@@ -319,21 +319,23 @@ def process_bundle(input_filepath: str, api_key: str, model_name: str):
                         is_video_format = clean_video_url and ".mp4" in clean_video_url.lower()
 
                         if is_video_format:
-                            # 2.1 Check Cache Lớp 1 (RAM) bằng video_url
-                            if clean_video_url in local_transcript_cache:
+                            # 2.1 Check Cache Lớp 1 (RAM)
+                            # FIX: Phải đảm bảo giá trị trong RAM KHÁC None thì mới tính là Hit
+                            if clean_video_url in local_transcript_cache and local_transcript_cache[clean_video_url].get("transcript") is not None:
                                 log.info(f"       -> [CACHE LỚP 1] Tái sử dụng transcript (RAM) cho video: {clean_video_url[:30]}...")
                                 transcript_data = local_transcript_cache[clean_video_url]
                                 
-                            # 2.2 Check Cache Lớp 2 (Database Toàn cục) bằng video_url
+                            # 2.2 Check Cache Lớp 2 (Database Toàn cục)
                             elif conn:
                                 try:
                                     with conn.cursor() as cursor:
-                                        # SỬA: Lấy video_language và BỎ điều kiện IS NOT NULL
-                                        # để tìm được cả những video "không có transcript" đã lưu trước đó
+                                        # FIX: Bổ sung "AND transcript IS NOT NULL"
+                                        # - Bỏ qua các dòng bị ép null (no_transcript=True từ trước)
+                                        # - Lấy thành công các dòng 'Video không có transcript' (vì nó là chuỗi, khác NULL)
                                         cursor.execute("""
                                             SELECT transcript, video_language, transcript_translated
                                             FROM videos
-                                            WHERE trim(video_url) = %s
+                                            WHERE trim(video_url) = %s AND transcript IS NOT NULL
                                             LIMIT 1;
                                         """, (clean_video_url,))
                                         result = cursor.fetchone()
@@ -352,19 +354,28 @@ def process_bundle(input_filepath: str, api_key: str, model_name: str):
 
                             # 2.3 Thực thi phân luồng
                             if transcript_data:
+                                # Hit Cache hợp lệ (Dữ liệu chữ thật, hoặc chuỗi 'Video không có transcript')
                                 gemini_html_data["transcript"] = transcript_data.get("transcript")
                                 gemini_html_data["transcript_language"] = transcript_data.get("transcript_language")
                                 gemini_html_data["transcript_translated"] = transcript_data.get("transcript_translated")
                             else:
-                                log.info("       -> [CACHE MISS] Gọi tiến trình tải và tách lời thoại...")
-                                new_transcript_data = process_media_for_transcript(clean_video_url)
+                                # CAN THIỆP LOGIC Ở ĐÂY: Cache miss thì check cờ no_transcript
+                                if no_transcript:
+                                    log.info("       -> [SKIP AUDIO] Cache Miss & Cờ no_transcript=True. Ép null, bỏ qua FFMPEG và Gemini.")
+                                    new_transcript_data = {
+                                        "transcript": None,
+                                        "transcript_language": None,
+                                        "transcript_translated": None
+                                    }
+                                else:
+                                    log.info("       -> [CACHE MISS] Gọi tiến trình tải và tách lời thoại...")
+                                    new_transcript_data = process_media_for_transcript(clean_video_url)
                                 
                                 gemini_html_data["transcript"] = new_transcript_data.get("transcript")
                                 gemini_html_data["transcript_language"] = new_transcript_data.get("transcript_language")
                                 gemini_html_data["transcript_translated"] = new_transcript_data.get("transcript_translated")
                                 
                                 # LƯU VÀO RAM CACHE BẤT KỂ KẾT QUẢ LÀ GÌ
-                                # (Kể cả là "Video không có transcript")
                                 local_transcript_cache[clean_video_url] = new_transcript_data
 
                         else:
@@ -420,6 +431,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Parse Raw Bundle using Gemini Structured Outputs")
     parser.add_argument("input_file", type=str, help="Đường dẫn đến file raw_bundle_...json")
     parser.add_argument("--model", type=str, default=DEFAULT_MODEL)
+    parser.add_argument("--no-transcript", action="store_true", help="Bỏ qua lấy transcript qua Gemini nếu Cache Miss")
     args = parser.parse_args()
 
     api_key = os.getenv("GEMINI_API_KEY")
@@ -427,4 +439,4 @@ if __name__ == "__main__":
         log.error("Thiếu GEMINI_API_KEY trong environment")
         raise EnvironmentError("Thiếu GEMINI_API_KEY trong environment")
 
-    process_bundle(args.input_file, api_key, args.model)
+    process_bundle(args.input_file, api_key, args.model, args.no_transcript)
