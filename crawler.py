@@ -13,7 +13,7 @@ from constants import (
     TARGET_URL, DEFAULT_TIMEOUT, LONG_TIMEOUT, Selectors, 
     DROPDOWN_SORTS, TIME_FILTERS, SORT_FILTERS, 
     WAIT_FOR_USER_CALLBACK, FACEBOOK_NETWORK_NAME_PAGE_ID,
-    VIEWPORT_WIDTH, VIEWPORT_HEIGHT, DEFAULT_MODEL, 
+    VIEWPORT_WIDTH, VIEWPORT_HEIGHT,
     OUTSIDE_NETWORKS, INSIDE_NETWORKS
 )  
 from human_behavior import (
@@ -23,8 +23,6 @@ from human_behavior import (
     human_navigate_to_top, human_navigate_to_bottom,
     human_close_modal
 )
-from parse_with_gemini import process_bundle
-from export_excel import json_to_excel, export_page_id_excel
 
 load_dotenv()
 
@@ -303,7 +301,7 @@ def run(api_tasks=None, custom_run_id=None, auto_resume=False, time_to_resume=60
     if not tasks: 
         log.error("Không có dữ liệu task. Hủy chạy.")
         report("Không có dữ liệu task. Hủy chạy.")
-        return
+        return {"raw_file_path": None, "is_page_id_run": False, "kicked_out": False}
 
     os.makedirs("crawl_json", exist_ok=True)
     output_filename = os.path.join("crawl_json", f"raw_bundle_{run_id}.json")
@@ -864,28 +862,11 @@ def run(api_tasks=None, custom_run_id=None, auto_resume=False, time_to_resume=60
         context.close()
 
         is_page_id_run = any(t.get("crawl_page_id", False) for t in tasks)
-        if is_page_id_run:
-            log.info("CHẾ ĐỘ CÀO PAGE ID: Bỏ qua Gemini và Database. Đang xuất Excel trực tiếp...")
-            report("Đang xuất file Excel chứa danh sách Page IDs...")
-            excel_path = export_page_id_excel(output_filename)
-            if excel_path:
-                report("Đã xuất file Excel Page IDs thành công!")
-            else:
-                report("Hoàn tất, nhưng không có Page ID nào để xuất.")
-        else:
-            report("Đang gửi dữ liệu thô sang Gemini AI để bóc tách nội dung...")
-            log.info("CHUYỂN GIAO SANG GEMINI PARSER...")
-            report("CHUYỂN GIAO SANG GEMINI PARSER...")
-            api_key = os.getenv("GEMINI_API_KEY")
-            if api_key: 
-                final_json_path = process_bundle(output_filename, api_key, DEFAULT_MODEL)
-                if final_json_path:
-                    log.info("CHUYỂN GIAO SANG EXCEL EXPORTER...")
-                    report("Đang xuất file Excel và cập nhật Database...")
-                    json_to_excel(final_json_path)
-                else:
-                    log.error("Không có file final JSON để chuyển sang Excel.")
-                    report("Không có file final JSON để chuyển sang Excel.")
+        return {
+            "raw_file_path": output_filename,
+            "is_page_id_run": is_page_id_run,
+            "kicked_out": global_kicked_out
+        }
 
 if __name__ == "__main__":
     run()

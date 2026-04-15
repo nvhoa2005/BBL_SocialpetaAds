@@ -14,6 +14,10 @@ from crawler import run as run_crawler
 from constants import TIME_FILTERS, SORT_FILTERS, DROPDOWN_SORTS
 from custom_logger import log
 
+from parse_with_gemini import process_bundle
+from export_excel import json_to_excel, export_page_id_excel
+from constants import DEFAULT_MODEL
+
 app = FastAPI(title="SocialPeta Crawler API")
 
 TASKS_DB = {}
@@ -34,6 +38,30 @@ class ResolveKickoutRequest(BaseModel):
     action: str = Field(..., description="Nhận giá trị: 'resume' hoặc 'stop'")
     delay: int = Field(default=60, description="Thời gian chờ (giây) trước khi resume")
 
+def sync_task_status(task_id: str, new_status: str, message: str):
+    """Cập nhật trạng thái đồng thời trên RAM và PostgreSQL"""
+    if task_id in TASKS_DB:
+        TASKS_DB[task_id]["status"] = new_status
+        TASKS_DB[task_id]["current_action"] = message
+        log.info(f"[Task {task_id} -> {new_status.upper()}]: {message}")
+
+    conn = None
+    cursor = None
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE crawl_tasks 
+            SET status = %s 
+            WHERE upstream_task_id = %s
+        """, (new_status.upper(), task_id))
+        conn.commit()
+    except Exception as e:
+        log.error(f"Lỗi đồng bộ DB Status cho task {task_id}: {e}")
+    finally:
+        if cursor: cursor.close()
+        if conn: conn.close()
+
 def background_crawl_task(task_id: str, req: CrawlRequest):
     def update_status_callback(message: str):
         if task_id in TASKS_DB:
@@ -42,9 +70,8 @@ def background_crawl_task(task_id: str, req: CrawlRequest):
 
     # Hàm Callback "Cầu nối" để Crawler dừng lại và chờ Frontend
     def wait_for_user_callback(app_id, current_ads, max_ads, timeout_seconds=1800):
-        TASKS_DB[task_id]["status"] = "waiting_for_user"
         msg = f"Tài khoản bị văng. Đã cào được {current_ads}/{max_ads} ads của app id {app_id}. Bạn muốn resume không?"
-        TASKS_DB[task_id]["current_action"] = msg
+        sync_task_status(task_id, "WAITING_FOR_USER", msg)
         TASKS_DB[task_id]["user_action"] = None
         
         start_time = time.time()
@@ -52,13 +79,13 @@ def background_crawl_task(task_id: str, req: CrawlRequest):
         while time.time() - start_time < timeout_seconds:
             action = TASKS_DB[task_id].get("user_action")
             if action:
-                TASKS_DB[task_id]["status"] = "processing" 
+                # DÙNG SYNC_TASK_STATUS VÀ TRẢ VỀ ĐÚNG TRẠNG THÁI 'SCRAPING'
+                sync_task_status(task_id, "SCRAPING", f"Nhận lệnh '{action}' từ người dùng. Đang tiếp tục xử lý...")
                 return action, TASKS_DB[task_id].get("resume_delay", 60)
             time.sleep(1)
         
         # HẾT GIỜ: Tự động chốt kết quả (Stop)
-        TASKS_DB[task_id]["status"] = "processing"
-        TASKS_DB[task_id]["current_action"] = "Quá 30 phút không phản hồi. Tự động chốt kết quả hiện tại..."
+        sync_task_status(task_id, "SCRAPING", "Quá 30 phút không phản hồi. Tự động chốt kết quả hiện tại...")
         return "stop", 0
 
     TASKS_DB[task_id]["user_cancelled"] = False
@@ -67,28 +94,23 @@ def background_crawl_task(task_id: str, req: CrawlRequest):
     
     try:
         log.info(f"Task {task_id} bắt đầu chạy ngầm...")
-        TASKS_DB[task_id]["status"] = "processing"
-        update_status_callback("Hệ thống đang khởi tạo trình duyệt...")
+        
+        # --- PHASE 1: SCRAPING (Chiếm dụng trình duyệt) ---
+        sync_task_status(task_id, "SCRAPING", "Hệ thống đang khởi tạo trình duyệt cào dữ liệu...")
         
         raw_app_ids = req.app_id.strip().split('\n')
         app_ids = [aid.strip() for aid in raw_app_ids if aid.strip()]
-        
         time_val = req.time_val if req.time_val in TIME_FILTERS else "90 Days"
         sort_val = req.sort_val if req.sort_val in SORT_FILTERS + DROPDOWN_SORTS else "Impression"
         
-        tasks_list = []
-        for aid in app_ids:
-            tasks_list.append({
-                "app_id": aid,
-                "networks": req.networks,
-                "time_val": time_val,
-                "sort_val": sort_val,
-                "max_ads": req.max_ads,
-                "start_page": req.start_page,
-                "crawl_page_id": req.crawl_page_id
-            })
+        tasks_list = [{
+            "app_id": aid, "networks": req.networks, "time_val": time_val,
+            "sort_val": sort_val, "max_ads": req.max_ads, "start_page": req.start_page,
+            "crawl_page_id": req.crawl_page_id
+        } for aid in app_ids]
             
-        run_crawler(
+        # Gọi crawler, lúc này run_crawler sẽ trả về dictionary
+        crawl_result = run_crawler(
             api_tasks=tasks_list, 
             custom_run_id=task_id,
             auto_resume=req.auto_resume_crawl_if_fail,
@@ -98,17 +120,55 @@ def background_crawl_task(task_id: str, req: CrawlRequest):
             check_cancel_callback=check_cancel_callback
         )
         
-        TASKS_DB[task_id]["status"] = "completed"
-        TASKS_DB[task_id]["current_action"] = "Đã hoàn thành toàn bộ Pipeline."
-        TASKS_DB[task_id]["result_file"] = os.path.join("crawl_json", f"final_result_{task_id}.json")
-        excel_path = os.path.join("crawl_results", f"excel_result_{task_id}.xlsx")
-        if os.path.exists(excel_path):
+        # Validate kết quả trả về từ Crawler
+        if not crawl_result:
+            raise Exception("Lỗi hệ thống: Crawler không trả về dữ liệu.")
+
+        raw_file_path = crawl_result.get("raw_file_path")
+        is_page_id_run = crawl_result.get("is_page_id_run")
+        
+        if not raw_file_path or not os.path.exists(raw_file_path):
+            raise Exception("Không tìm thấy file raw data sau khi cào (Hoặc không có task nào hợp lệ).")
+
+        # KIỂM TRA LỆNH HỦY TỪ USER
+        is_cancelled = TASKS_DB.get(task_id, {}).get("user_cancelled", False)
+
+        # --- CHUYỂN GIAO TRẠNG THÁI (MỞ KHÓA TÀI KHOẢN SOCIALPETA CHO HÀNG ĐỢI) ---
+        if is_cancelled:
+            sync_task_status(task_id, "PARSING_GEMINI", "Đã nhận lệnh hủy. Giải phóng trình duyệt và đang xử lý/đóng gói phần dữ liệu đã cào được...")
+        else:
+            sync_task_status(task_id, "PARSING_GEMINI", "Đã giải phóng trình duyệt. Đang đẩy data qua Gemini và xuất Excel...")
+
+        # --- PHASE 2: PARSING & EXPORTING (Chạy song song, không cần trình duyệt) ---
+        excel_path = None
+        if is_page_id_run:
+            excel_path = export_page_id_excel(raw_file_path)
+        else:
+            api_key = os.getenv("GEMINI_API_KEY")
+            if not api_key:
+                raise Exception("Thiếu GEMINI_API_KEY trong file .env")
+                
+            final_json_path = process_bundle(raw_file_path, api_key, DEFAULT_MODEL)
+            if final_json_path:
+                excel_path = json_to_excel(final_json_path)
+            else:
+                raise Exception("Lỗi bóc tách Gemini, không sinh được file final JSON.")
+
+        # --- HOÀN TẤT & CHỐT STATUS ---
+        TASKS_DB[task_id]["result_file"] = final_json_path if not is_page_id_run else raw_file_path
+        if excel_path and os.path.exists(excel_path):
             TASKS_DB[task_id]["excel_file"] = excel_path
             TASKS_DB[task_id]["download_url"] = f"/api/v1/download/{task_id}"
+
+        # Nếu user đã ấn Cancel trước đó, chốt hạ bằng status Cancelled để UI nhận diện
+        final_is_cancelled = TASKS_DB.get(task_id, {}).get("user_cancelled", False)
+        if final_is_cancelled:
+            sync_task_status(task_id, "CANCELLED", "Đã hoàn thành đóng gói dữ liệu dở dang do người dùng yêu cầu hủy.")
+        else:
+            sync_task_status(task_id, "COMPLETED", "Đã hoàn thành toàn bộ Pipeline.")
         
     except Exception as e:
-        TASKS_DB[task_id]["status"] = "failed"
-        TASKS_DB[task_id]["current_action"] = f"Lỗi: {str(e)}"
+        sync_task_status(task_id, "FAILED", f"Lỗi hệ thống: {str(e)}")
         log.error(f"Task {task_id} bị lỗi: {e}")
 
 # --- API ENDPOINTS ---
@@ -116,20 +176,20 @@ def background_crawl_task(task_id: str, req: CrawlRequest):
 async def start_crawl(request: CrawlRequest, background_tasks: BackgroundTasks):
     task_id = datetime.now().strftime("crawl_%Y%m%d_%H%M%S_") + str(uuid.uuid4())[:6]
     TASKS_DB[task_id] = {
-        "status": "pending",
+        "status": "PENDING",
         "current_action": "Đang chờ điều phối luồng...",
         "created_at": datetime.now().isoformat(),
         "total_apps": len([aid for aid in request.app_id.split('\n') if aid.strip()])
     }
     background_tasks.add_task(background_crawl_task, task_id, request)
-    return {"task_id": task_id, "status": "pending"}
+    return {"task_id": task_id, "status": "PENDING"}
 
 @app.get("/api/v1/status/{task_id}")
 async def get_status(task_id: str):
     if task_id not in TASKS_DB:
         raise HTTPException(status_code=404, detail="Không tìm thấy task_id.")
     task_info = TASKS_DB[task_id]
-    if task_info["status"] == "completed":
+    if task_info["status"] in ["COMPLETED", "cancelled", "CANCELLED", "completed"]:
         result_file = task_info.get("result_file")
         if result_file and os.path.exists(result_file):
             with open(result_file, 'r', encoding='utf-8') as f:
@@ -141,7 +201,7 @@ async def resolve_kickout(task_id: str, request: ResolveKickoutRequest):
     if task_id not in TASKS_DB:
         log.info(f'Not found {task_id}')
         raise HTTPException(status_code=404, detail="Không tìm thấy task_id.")
-    if TASKS_DB[task_id].get("status") != "waiting_for_user":
+    if TASKS_DB[task_id].get("status") != "WAITING_FOR_USER":
         raise HTTPException(status_code=400, detail="Task hiện tại không ở trạng thái chờ quyết định.")
     if request.action not in ["resume", "stop"]:
         raise HTTPException(status_code=400, detail="Action không hợp lệ.")
@@ -156,7 +216,7 @@ async def download_excel(task_id: str):
     
     if task_id in TASKS_DB:
         task_info = TASKS_DB[task_id]
-        if task_info.get("status") != "completed":
+        if task_info.get("status") not in ["completed", "cancelled", "COMPLETED", "CANCELLED"]:
             raise HTTPException(status_code=400, detail="Task đang chạy chưa hoàn thành, không thể tải file.")
         excel_file = task_info.get("excel_file")
         
@@ -173,7 +233,7 @@ async def download_excel(task_id: str):
             
             db_status = str(result[0]).strip().upper() 
             
-            if db_status != 'COMPLETED':
+            if db_status not in ['COMPLETED', 'CANCELLED']:
                 raise HTTPException(status_code=400, detail=f"Task hiện tại ở trạng thái {db_status}, chưa hoàn chỉnh dữ liệu Excel.")
             
             excel_file = os.path.join("crawl_results", f"excel_result_{task_id}.xlsx")
@@ -230,10 +290,13 @@ async def cancel_task(task_id: str):
     if task_id not in TASKS_DB:
         raise HTTPException(status_code=404, detail="Không tìm thấy task_id.")
     
+    if TASKS_DB[task_id].get("status") in ["completed", "cancelled", "failed", "COMPLETED", "CANCELLED", "FAILED"]:
+        raise HTTPException(status_code=400, detail="Task đã kết thúc, không thể thực hiện lệnh hủy.")
+    
     TASKS_DB[task_id]["user_cancelled"] = True
     TASKS_DB[task_id]["current_action"] = "Đang tiếp nhận lệnh HỦY từ người dùng. Đang đóng gói dữ liệu..."
     
-    return {"status": "success", "message": "Đã gửi yêu cầu dừng. Vui lòng đợi trong giây lát để hệ thống xử lý dữ liệu hiện có."}
+    return {"status": "SUCCESS", "message": "Đã gửi yêu cầu dừng. Vui lòng đợi trong giây lát để hệ thống xử lý dữ liệu hiện có."}
 
 @app.get("/api/v1/task/{task_id}/page-id-info")
 async def get_page_id_info(task_id: str):
@@ -253,7 +316,7 @@ async def get_page_id_info(task_id: str):
                 raise HTTPException(status_code=404, detail="Không tìm thấy task_id trong RAM lẫn Database.")
             
             db_status = str(result[0]).strip().upper()
-            task_status = "completed" if db_status == 'COMPLETED' else db_status.lower()
+            task_status = db_status
             
         except psycopg2.Error as e:
             log.error(f"Lỗi truy vấn DB khi lấy info Page ID: {e}")
@@ -263,7 +326,7 @@ async def get_page_id_info(task_id: str):
             if 'conn' in locals(): conn.close()
 
     # 2. Ràng buộc: Chỉ trả về data khi task đã chạy xong hoàn toàn
-    if task_status != "completed":
+    if task_status not in ["completed", "cancelled", "COMPLETED", "CANCELLED"]:
         raise HTTPException(
             status_code=400, 
             detail=f"Task hiện tại đang ở trạng thái '{task_status}', chưa hoàn thành."
@@ -316,3 +379,5 @@ async def get_page_id_info(task_id: str):
     }
 
 # uvicorn api:app --reload
+# uvicorn api:app --host 192.168.1.68 --port 8000 
+# nohup uvicorn api:app --host 192.168.1.68 --port 8000 > api.log 2>&1 &
