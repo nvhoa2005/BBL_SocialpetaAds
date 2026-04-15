@@ -58,32 +58,28 @@ def get_val(row, col_name, default=None):
 
 def update_global_duplicate_counts(cursor):
     """
-    Hàm Post-processing: Tính toán số lần lặp toàn cục của link từ bảng adsets
+    Hàm Post-processing: Tính toán số lần lặp toàn cục của link từ cột video_url
     sau đó cập nhật hồi tố lại cho cột duplicate_count trong bảng videos.
     """
-    # 1. Gán mặc định = 1 cho các quảng cáo không có link (rỗng/null)
+    # 1. Gán mặc định = 1 cho các quảng cáo không có video_url (rỗng/null)
     cursor.execute("""
         UPDATE videos
         SET duplicate_count = 1
-        FROM adsets
-        WHERE adsets.video_id = videos.id
-          AND (adsets.original_post_link IS NULL OR trim(adsets.original_post_link) = '');
+        WHERE video_url IS NULL OR trim(video_url) = '';
     """)
 
-    # 2. Tính tổng toàn cục & cập nhật cho các quảng cáo có link hợp lệ
-    #    (Cập nhật luôn cho tất cả các bản ghi cũ trong quá khứ)
+    # 2. Tính tổng toàn cục & cập nhật dựa theo video_url
     cursor.execute("""
         WITH LinkCounts AS (
-            SELECT trim(original_post_link) as clean_link, COUNT(*) as total_count
-            FROM adsets
-            WHERE original_post_link IS NOT NULL AND trim(original_post_link) != ''
-            GROUP BY trim(original_post_link)
+            SELECT trim(video_url) as clean_link, COUNT(*) as total_count
+            FROM videos
+            WHERE video_url IS NOT NULL AND trim(video_url) != ''
+            GROUP BY trim(video_url)
         )
-        UPDATE videos
+        UPDATE videos v
         SET duplicate_count = lc.total_count
-        FROM adsets a
-        JOIN LinkCounts lc ON trim(a.original_post_link) = lc.clean_link
-        WHERE videos.id = a.video_id;
+        FROM LinkCounts lc
+        WHERE trim(v.video_url) = lc.clean_link;
     """)
 
 def import_excel_to_db(file_path):
@@ -151,9 +147,8 @@ def import_excel_to_db(file_path):
                 ))
                 text_id = cursor.fetchone()[0]
 
-                video_url = get_val(row, 'link_youtube') or get_val(row, 'original_post_link')
+                final_video_url = get_val(row, 'video_url')
                 
-                # Lưu ý: Không truyền duplicate_count ở đây vì lệnh hậu kỳ sẽ xử lý sau
                 cursor.execute("""
                     INSERT INTO videos (
                         video_url, transcript, transcript_translated, 
@@ -161,7 +156,7 @@ def import_excel_to_db(file_path):
                     ) VALUES (%s, %s, %s, %s)
                     RETURNING id;
                 """, (
-                    video_url, 
+                    final_video_url, 
                     get_val(row, 'transcript'), get_val(row, 'transcript_translated'),
                     get_val(row, 'transcript_language')
                 ))

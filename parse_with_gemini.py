@@ -7,9 +7,11 @@ import requests
 import psycopg2
 from datetime import datetime
 from typing import Optional
+import subprocess
+import uuid
 
 import google.generativeai as genai
-from google.generativeai.types import GenerationConfig
+from google.generativeai.types import GenerationConfig, HarmCategory, HarmBlockThreshold
 from pydantic import BaseModel, Field, ValidationError
 from dotenv import load_dotenv
 
@@ -22,6 +24,7 @@ load_dotenv()
 # 1. ĐỊNH NGHĨA LƯỚI LỌC PYDANTIC (SCHEMA)
 # ==========================================
 class AdCreativeData(BaseModel):
+    video_url: Optional[str] = Field(description="Trích xuất link Media từ HTML. Ưu tiên 1: Link file video (thường có đuôi .mp4 nằm trong thẻ <video> hoặc <source>). Ưu tiên 2: Nếu không có video, lấy link hình ảnh. Nếu không có cả hai, bắt buộc để null.")
     ad_id: Optional[str] = Field(description="Trích xuất từ tham số 'id=' trong link")
     original_post_link: Optional[str] = Field(description="Đường link gốc của bài post")
     link_youtube: Optional[str] = Field(description="Link youtube nếu có")
@@ -49,12 +52,102 @@ class AdCreativeData(BaseModel):
     transcript_translated: Optional[str] = Field(description="Dịch sang Tiếng Việt phần transcript vừa lấy được")
 
 class TranscriptTranslationData(BaseModel):
+    transcript: Optional[str] = Field(description="Nội dung lời thoại gốc nghe được. Nếu không có tiếng người, để null.")
     transcript_language: Optional[str] = Field(description="Ngôn ngữ của transcript (VD: en, vi...).")
     transcript_translated: Optional[str] = Field(description="Dịch sang Tiếng Việt phần transcript vừa lấy được")
-
 # ==========================================
 # 2. API HỖ TRỢ & DATABASE CONNECTION
 # ==========================================
+def process_media_for_transcript(video_url: str) -> dict:
+    """Tải MP4 -> Convert MP3 qua FFMPEG -> Đẩy lên Gemini Audio -> Xóa rác"""
+    temp_id = str(uuid.uuid4())
+    mp4_path = f"temp_{temp_id}.mp4"
+    mp3_path = f"temp_{temp_id}.mp3"
+    
+    result = {
+        "transcript": None,
+        "transcript_language": None, 
+        "transcript_translated": None
+    }
+
+    try:
+        log.info(f"       -> [MEDIA] Đang tải file video: {video_url[:50]}...")
+        # 1. Download Video
+        r = requests.get(video_url, stream=True, timeout=120)
+        r.raise_for_status()
+        with open(mp4_path, 'wb') as f:
+            for chunk in r.iter_content(chunk_size=8192):
+                f.write(chunk)
+
+        log.info(f"       -> [FFMPEG] Đang tách âm thanh sang định dạng MP3...")
+        # 2. Chạy FFMPEG (Cờ -vn để loại bỏ hình ảnh, chỉ lấy audio)
+        try:
+            cmd = ['ffmpeg', '-y', '-i', mp4_path, '-vn', '-ar', '44100', '-ac', '2', '-b:a', '128k', mp3_path]
+            # Ép timeout 3 phút tối đa cho một lần convert
+            process = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=180)
+        except subprocess.TimeoutExpired:
+            log.error("       -> [CẢNH BÁO] Tiến trình FFMPEG bị treo quá 3 phút. Đã cưỡng chế ngắt.")
+            return result
+
+        if process.returncode != 0 or not os.path.exists(mp3_path) or os.path.getsize(mp3_path) == 0:
+            log.warning("       -> [CẢNH BÁO] Video không có âm thanh hoặc lỗi convert FFMPEG. Bỏ qua dịch thuật.")
+            result["transcript"] = "Video không có transcript"
+            return result
+
+        log.info(f"       -> [GEMINI AUDIO] Đang đẩy MP3 lên AI để bóc tách lời thoại...")
+        audio_file = None
+        try:
+            # 3. Đẩy lên Gemini Storage
+            audio_file = genai.upload_file(path=mp3_path)
+
+            # 4. Gọi Model
+            model = genai.GenerativeModel("gemini-2.5-flash-lite")
+            prompt = "Dưới đây là một đoạn âm thanh. Hãy nghe, chép lại lời thoại gốc (transcript), xác định ngôn ngữ gốc và dịch toàn bộ nội dung sang tiếng Việt. Nếu chỉ có tiếng nhạc hoặc tạp âm mà không có lời thoại con người, hãy trả về toàn bộ là null."
+            
+            safety_settings = {
+                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+            }
+
+            response = model.generate_content(
+                [prompt, audio_file],
+                safety_settings=safety_settings,
+                generation_config=GenerationConfig(
+                    temperature=0.1,
+                    response_mime_type="application/json",
+                    response_schema=TranscriptTranslationData,
+                )
+            )
+            
+            # 5. Map dữ liệu
+            parsed_data = TranscriptTranslationData.model_validate_json(response.text).model_dump()
+            if not parsed_data.get("transcript") or str(parsed_data.get("transcript")).lower() == 'null':
+                result["transcript"] = "Video không có transcript"
+                result["transcript_language"] = None
+                result["transcript_translated"] = None
+            else:
+                result.update(parsed_data)
+            log.info("       -> [THÀNH CÔNG] Đã hoàn tất lấy Audio Transcript.")
+        finally:
+            # LUÔN LUÔN xóa file trên Cloud dù thành công hay lỗi
+            if audio_file:
+                try:
+                    genai.delete_file(audio_file.name)
+                except Exception as del_err:
+                    log.error(f"       -> [LỖI DỌN RÁC CLOUD] Không thể xóa file {audio_file.name}: {del_err}")
+
+    except Exception as e:
+        log.error(f"       -> [LỖI PIPELINE MEDIA] {e}")
+        result["transcript"] = "Video không có transcript"
+    finally:
+        # 6. Dọn dẹp ổ cứng cục bộ triệt để
+        if os.path.exists(mp4_path): os.remove(mp4_path)
+        if os.path.exists(mp3_path): os.remove(mp3_path)
+
+    return result
+
 def get_db_connection():
     """Tạo kết nối tới PostgreSQL để check cache toàn cục"""
     try:
@@ -69,57 +162,64 @@ def get_db_connection():
         log.warning(f"Không thể kết nối Database để check Cache Toàn cục: {e}")
         return None
 
-def get_youtube_transcript_from_api(url: str) -> str:
-    """Gọi API nội bộ để lấy transcript text từ Youtube URL"""
-    api_url = "https://script.stemlabs.site/transcript-url"
-    headers = {
-        "x-api-key": "1df1c391-ec19-4e5e-980a-02c0ac5de7af",
-        "Content-Type": "application/json"
-    }
-    payload = {"video_url": url}
+# def get_youtube_transcript_from_api(url: str) -> str:
+#     """Gọi API nội bộ để lấy transcript text từ Youtube URL"""
+#     api_url = "https://script.stemlabs.site/transcript-url"
+#     headers = {
+#         "x-api-key": "1df1c391-ec19-4e5e-980a-02c0ac5de7af",
+#         "Content-Type": "application/json"
+#     }
+#     payload = {"video_url": url}
     
-    try:
-        log.info(f"       -> Đang gọi API lấy Transcript cho: {url}")
-        response = requests.post(api_url, json=payload, headers=headers, timeout=60)
+#     try:
+#         log.info(f"       -> Đang gọi API lấy Transcript cho: {url}")
+#         response = requests.post(api_url, json=payload, headers=headers, timeout=60)
         
-        if response.status_code == 200:
-            transcript_text = response.text.strip()
-            if not transcript_text or transcript_text.lower() in ['null', 'none', '{}', 'error']:
-                return None
-            return transcript_text
-        else:
-            log.error(f"       -> [LỖI API] Status {response.status_code}: {response.text}")
-            return None
-    except Exception as e:
-        log.error(f"       -> [LỖI NETWORK] Không thể gọi API transcript: {e}")
-        return None
+#         if response.status_code == 200:
+#             transcript_text = response.text.strip()
+#             if not transcript_text or transcript_text.lower() in ['null', 'none', '{}', 'error']:
+#                 return None
+#             return transcript_text
+#         else:
+#             log.error(f"       -> [LỖI API] Status {response.status_code}: {response.text}")
+#             return None
+#     except Exception as e:
+#         log.error(f"       -> [LỖI NETWORK] Không thể gọi API transcript: {e}")
+#         return None
 
-def translate_transcript_with_gemini(transcript: str) -> dict:
-    """Sử dụng Gemini 2.5 Flash Lite để xác định ngôn ngữ và dịch transcript"""
-    log.info(f"       -> Đang dịch Transcript ({len(transcript)} ký tự) bằng gemini-2.5-flash-lite...")
-    model = genai.GenerativeModel("gemini-2.5-flash-lite") 
-    prompt = f"Dưới đây là một đoạn transcript. Hãy xác định ngôn ngữ gốc của nó và dịch toàn bộ sang tiếng Việt.\n\nTranscript: {transcript}"
+# def translate_transcript_with_gemini(transcript: str) -> dict:
+#     """Sử dụng Gemini 2.5 Flash Lite để xác định ngôn ngữ và dịch transcript"""
+#     log.info(f"       -> Đang dịch Transcript ({len(transcript)} ký tự) bằng gemini-2.5-flash-lite...")
+#     model = genai.GenerativeModel("gemini-2.5-flash-lite") 
+#     prompt = f"Dưới đây là một đoạn transcript. Hãy xác định ngôn ngữ gốc của nó và dịch toàn bộ sang tiếng Việt.\n\nTranscript: {transcript}"
     
-    try:
-        response = model.generate_content(
-            prompt,
-            generation_config=GenerationConfig(
-                temperature=0.1,
-                response_mime_type="application/json",
-                response_schema=TranscriptTranslationData,
-            )
-        )
-        parsed_data = TranscriptTranslationData.model_validate_json(response.text).model_dump()
-        return parsed_data
-    except Exception as e:
-        log.error(f"       -> [LỖI GEMINI] Khi dịch transcript: {e}")
-        return {"transcript_language": None, "transcript_translated": None}
+#     try:
+#         response = model.generate_content(
+#             prompt,
+#             generation_config=GenerationConfig(
+#                 temperature=0.1,
+#                 response_mime_type="application/json",
+#                 response_schema=TranscriptTranslationData,
+#             )
+#         )
+#         parsed_data = TranscriptTranslationData.model_validate_json(response.text).model_dump()
+#         return parsed_data
+#     except Exception as e:
+#         log.error(f"       -> [LỖI GEMINI] Khi dịch transcript: {e}")
+#         return {"transcript_language": None, "transcript_translated": None}
 
 def parse_html_with_gemini(html: str, model_name: str) -> dict:
     prompt = GEMINI_PROMPT_TEMPLATE.format(html=html)
     model = genai.GenerativeModel(model_name)
+    safety_settings = {
+        HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+        HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+        HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+    }
     response = model.generate_content(
         prompt,
+        safety_settings=safety_settings,
         generation_config=GenerationConfig(
             temperature=0.1, 
             response_mime_type="application/json",
@@ -203,83 +303,78 @@ def process_bundle(input_filepath: str, api_key: str, model_name: str):
                     log.warning("     [BỎ QUA] HTML rỗng.")
                 else:
                     try:
-                        # BƯỚC 1: PARSE HTML (Bắt buộc chạy để có được original_post_link)
+                        # BƯỚC 1: PARSE HTML (Lấy ra video_url)
                         gemini_html_data = parse_html_with_gemini(raw_html, model_name)
                         
-                        # BƯỚC 2: XỬ LÝ TRANSCRIPT YOUTUBE (CÓ ÁP DỤNG CACHE 2 LỚP)
-                        link_yt = gemini_html_data.get("link_youtube")
-                        original_link = gemini_html_data.get("original_post_link")
-                        
-                        if link_yt and ("youtube.com" in link_yt or "youtu.be" in link_yt):
-                            clean_original_link = str(original_link).strip() if original_link else None
-                            transcript_data = None
-                            
-                            # 2.1 Check Cache Lớp 1 (Local)
-                            if clean_original_link and clean_original_link in local_transcript_cache:
-                                log.info(f"       -> [CACHE LỚP 1] Tái sử dụng transcript (RAM) cho link: {clean_original_link}")
-                                transcript_data = local_transcript_cache[clean_original_link]
+                        # BƯỚC 2: PHÂN LUỒNG MEDIA & CACHE (Theo video_url)
+                        clean_video_url = gemini_html_data.get("video_url")
+                        if isinstance(clean_video_url, str):
+                            clean_video_url = clean_video_url.strip()
+                        else:
+                            clean_video_url = None
+
+                        transcript_data = None
+
+                        # Kiểm tra xem link có phải là dạng Video cần bóc audio không (.mp4)
+                        is_video_format = clean_video_url and ".mp4" in clean_video_url.lower()
+
+                        if is_video_format:
+                            # 2.1 Check Cache Lớp 1 (RAM) bằng video_url
+                            if clean_video_url in local_transcript_cache:
+                                log.info(f"       -> [CACHE LỚP 1] Tái sử dụng transcript (RAM) cho video: {clean_video_url[:30]}...")
+                                transcript_data = local_transcript_cache[clean_video_url]
                                 
-                            # 2.2 Check Cache Lớp 2 (Database Toàn cục)
-                            elif clean_original_link and conn:
+                            # 2.2 Check Cache Lớp 2 (Database Toàn cục) bằng video_url
+                            elif conn:
                                 try:
                                     with conn.cursor() as cursor:
-                                        # Lệnh SQL tìm transcript ĐÃ TỒN TẠI NỘI DUNG dựa trên original_post_link
+                                        # SỬA: Lấy video_language và BỎ điều kiện IS NOT NULL
+                                        # để tìm được cả những video "không có transcript" đã lưu trước đó
                                         cursor.execute("""
-                                            SELECT v.transcript, v.transcript_language, v.transcript_translated
-                                            FROM adsets a
-                                            JOIN videos v ON a.video_id = v.id
-                                            WHERE trim(a.original_post_link) = %s
-                                              AND v.transcript IS NOT NULL
-                                              AND trim(v.transcript) != ''
+                                            SELECT transcript, video_language, transcript_translated
+                                            FROM videos
+                                            WHERE trim(video_url) = %s
                                             LIMIT 1;
-                                        """, (clean_original_link,))
+                                        """, (clean_video_url,))
                                         result = cursor.fetchone()
                                         
                                         if result:
-                                            log.info(f"       -> [CACHE LỚP 2] Tái sử dụng transcript (DB) cho link: {clean_original_link}")
+                                            log.info(f"       -> [CACHE LỚP 2] Tái sử dụng dữ liệu đã có trong DB.")
                                             transcript_data = {
                                                 "transcript": result[0],
                                                 "transcript_language": result[1],
                                                 "transcript_translated": result[2]
                                             }
-                                            # Nạp lên Lớp 1 (RAM) để xài cho nhanh nếu các ad phía sau gặp lại link này
-                                            local_transcript_cache[clean_original_link] = transcript_data
+                                            local_transcript_cache[clean_video_url] = transcript_data
                                 except Exception as e:
                                     log.error(f"       -> [LỖI DB CACHE] {e}")
-                                    conn.rollback() # Xóa trạng thái lỗi để query kế tiếp không bị kẹt
+                                    conn.rollback()
 
-                            # 2.3 Phân luồng: Dùng Cache hoặc Gọi Mới
+                            # 2.3 Thực thi phân luồng
                             if transcript_data:
-                                # Nếu có data từ bộ đệm (Local hoặc DB), gán luôn, bỏ qua bước gọi API
                                 gemini_html_data["transcript"] = transcript_data.get("transcript")
                                 gemini_html_data["transcript_language"] = transcript_data.get("transcript_language")
                                 gemini_html_data["transcript_translated"] = transcript_data.get("transcript_translated")
                             else:
-                                # BẮT BUỘC PHẢI GỌI LẠI VÌ CACHE KHÔNG CÓ HOẶC LẦN TRƯỚC BỊ NULL
-                                log.info("       -> [CACHE MISS] Chưa có dữ liệu hoặc lỗi. Tiến hành gọi API mới...")
-                                transcript_text = get_youtube_transcript_from_api(link_yt)
+                                log.info("       -> [CACHE MISS] Gọi tiến trình tải và tách lời thoại...")
+                                new_transcript_data = process_media_for_transcript(clean_video_url)
                                 
-                                if transcript_text:
-                                    translation_data = translate_transcript_with_gemini(transcript_text)
-                                    
-                                    gemini_html_data["transcript"] = transcript_text
-                                    gemini_html_data["transcript_language"] = translation_data.get("transcript_language")
-                                    gemini_html_data["transcript_translated"] = translation_data.get("transcript_translated")
-                                    
-                                    # CHỈ Lưu lại vào Lớp 1 (RAM) khi thành công
-                                    if clean_original_link:
-                                        local_transcript_cache[clean_original_link] = {
-                                            "transcript": transcript_text,
-                                            "transcript_language": translation_data.get("transcript_language"),
-                                            "transcript_translated": translation_data.get("transcript_translated")
-                                        }
-                                    log.info("       -> Hoàn thành lấy & dịch Transcript (API Mới).")
-                                else:
-                                    # Lấy thất bại (API Youtube không trả về) -> Cho phép trống, KHÔNG lưu cache để lần sau thử lại
-                                    gemini_html_data["transcript"] = None
-                                    gemini_html_data["transcript_language"] = None
-                                    gemini_html_data["transcript_translated"] = None
-                                    
+                                gemini_html_data["transcript"] = new_transcript_data.get("transcript")
+                                gemini_html_data["transcript_language"] = new_transcript_data.get("transcript_language")
+                                gemini_html_data["transcript_translated"] = new_transcript_data.get("transcript_translated")
+                                
+                                # LƯU VÀO RAM CACHE BẤT KỂ KẾT QUẢ LÀ GÌ
+                                # (Kể cả là "Video không có transcript")
+                                local_transcript_cache[clean_video_url] = new_transcript_data
+
+                        else:
+                            # Nếu là Hình ảnh tĩnh hoặc null -> Cưỡng ép toàn bộ transcript về null
+                            if clean_video_url:
+                                log.info("       -> [BỎ QUA] Đây là link hình ảnh tĩnh, không cần dịch Audio.")
+                            gemini_html_data["transcript"] = None
+                            gemini_html_data["transcript_language"] = None
+                            gemini_html_data["transcript_translated"] = None
+
                         ad_result["gemini_data"] = gemini_html_data
                         success_count += 1
                         log.info("     [THÀNH CÔNG]")

@@ -13,7 +13,7 @@ def json_to_excel(json_filepath: str) -> str:
         "description_language", "description_translated", "duration", 
         "end_date", "headline", "headline_language", "headline_translated", 
         "impression", "language", "link_youtube", "network", 
-        "original_post_link", "region", "start_date", 
+        "original_post_link", "video_url", "region", "start_date", 
         "top_10_percent_creative", "top_1_percent_creative", 
         "transcript", "transcript_language", "transcript_translated", "duplicate_count"
     ]
@@ -44,32 +44,27 @@ def json_to_excel(json_filepath: str) -> str:
         
         for ad in app.get("ads", []):
             gemini_data = ad.get("gemini_data")
-            
-            if not gemini_data:
-                continue
+            if not gemini_data: continue
                 
-            row = {
-                "app_id": app_id,
-                "filters_applied": filters_applied
-            }
+            row = {"app_id": app_id, "filters_applied": filters_applied}
             row.update(gemini_data)
             
-            # Xử lý đếm link (Bỏ qua rỗng/null)
-            link = row.get("original_post_link")
-            if link and str(link).strip():
-                clean_link = str(link).strip()
+            # Xử lý đếm link bằng video_url (Bỏ qua rỗng/null)
+            v_url = row.get("video_url")
+            if v_url and str(v_url).strip():
+                clean_link = str(v_url).strip()
                 link_counts[clean_link] = link_counts.get(clean_link, 0) + 1
                 
             rows.append(row)
 
     # 4. Gán giá trị duplicate_count cục bộ cho từng dòng
     for row in rows:
-        link = row.get("original_post_link")
-        if link and str(link).strip():
-            clean_link = str(link).strip()
+        v_url = row.get("video_url")
+        if v_url and str(v_url).strip():
+            clean_link = str(v_url).strip()
             row["duplicate_count"] = link_counts[clean_link]
         else:
-            # Nếu không có link (rỗng/null) -> Mặc định là 1 (không gộp chung)
+            # Rỗng/Null thì duplicate_count luôn là 1
             row["duplicate_count"] = 1
 
     # 5. Tạo DataFrame với cơ chế giữ form

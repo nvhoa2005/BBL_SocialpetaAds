@@ -89,6 +89,7 @@ DROPDOWN_SORTS = ["Related Ads", "Popularity", "Like", "Comment", "Share"]
 GEMINI_PROMPT_TEMPLATE = """
 Hãy trích xuất thông tin quảng cáo từ đoạn mã HTML sau.
 Nếu trường nào không có dữ liệu, hãy để null. Không bịa đặt dữ liệu.
+Lưu ý khi xuất link Media từ HTML. Ưu tiên 1: Link file video (thường có đuôi .mp4 nằm trong thẻ <video> hoặc <source>). Ưu tiên 2: Nếu không có video, lấy link hình ảnh. Nếu không có cả hai, bắt buộc để null.
 Lưu ý nếu không có thì để null, top 1% creative và top 10% creative nếu không có thì là false, headline thường có hiệu ứng khi hover vào, không được phép trả lời thừa ngoài yêu cầu
 
 HTML:
