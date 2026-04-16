@@ -89,8 +89,12 @@ DROPDOWN_SORTS = ["Related Ads", "Popularity", "Like", "Comment", "Share"]
 GEMINI_PROMPT_TEMPLATE = """
 Hãy trích xuất thông tin quảng cáo từ đoạn mã HTML sau.
 Nếu trường nào không có dữ liệu, hãy để null. Không bịa đặt dữ liệu.
-Lưu ý khi xuất link Media từ HTML, ĐẶC BIỆT CẨN THẬN phân biệt giữa link media và original_post_link, hai cái đó là hoàn toàn khác nhau, link media thường có "sp2cdn" ở trong đường dẫn. Ưu tiên 1: Link file video (thường có đuôi .mp4 nằm trong thẻ <video> hoặc <source>). Ưu tiên 2: Nếu không có video, lấy link hình ảnh. Nếu không có cả hai, bắt buộc để null.
-Lưu ý nếu không có thì để null, top 1% creative và top 10% creative nếu không có thì là false, headline thường có hiệu ứng khi hover vào, không được phép trả lời thừa ngoài yêu cầu
+Lưu ý trường original_post_link 99% không có chữ "socialpeta" ở trong đó.
+Ví dụ original_post_link: https://www.youtube.com/watch?v=lmWSuTOZxb4
+Lưu ý khi xuất video_url từ HTML, ĐẶC BIỆT CẨN THẬN phân biệt giữa video_url và original_post_link, hai cái đó là hoàn toàn khác nhau, link media thường có "sp2cdn" ở trong đường dẫn. ƯU TIÊN 1: Link file video (thường có đuôi .mp4). Ưu tiên 2: Nếu không có video, lấy link hình ảnh (thường có đuôi jpg, png)
+Ví dụ video_url: https://sp2cdn-idea-global.zingfront.com/sp_opera/9f82e3179a389e160c72d2c156385b0c.mp4
+Lưu ý video_url 99% CÓ ĐUÔI .mp4, nếu tìm không thấy thì mới lấy hình ảnh có đuôi .jpg và .png
+Lưu ý top 1% creative và top 10% creative nếu không có thì là false, headline thường có hiệu ứng khi hover vào.
 
 HTML:
 {html}
