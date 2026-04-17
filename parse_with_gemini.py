@@ -31,7 +31,7 @@ class AdCreativeData(BaseModel):
     network: Optional[str] = Field(description="Nền tảng quảng cáo")
     language: Optional[str] = Field(description="Ngôn ngữ")
     region: Optional[str] = Field(description="Quốc gia hoặc Khu vực")
-    duration: Optional[str] = Field(description="Thời lượng video")
+    duration: Optional[str] = Field(description="Thời gian chạy ads")
     start_date: Optional[str] = Field(description="Ngày bắt đầu")
     end_date: Optional[str] = Field(description="Ngày kết thúc")
     impression: Optional[str] = Field(description="Số lượt hiển thị (Impression)")

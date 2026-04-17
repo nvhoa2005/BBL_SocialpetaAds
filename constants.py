@@ -95,6 +95,7 @@ Lưu ý khi xuất video_url từ HTML, ĐẶC BIỆT CẨN THẬN phân biệt 
 Ví dụ video_url: https://sp2cdn-idea-global.zingfront.com/sp_opera/9f82e3179a389e160c72d2c156385b0c.mp4
 Lưu ý video_url 99% CÓ ĐUÔI .mp4, nếu tìm không thấy thì mới lấy hình ảnh có đuôi .jpg và .png
 Lưu ý top 1% creative và top 10% creative nếu không có thì là false, headline thường có hiệu ứng khi hover vào.
+Lưu ý trường duration thì nó ĐƯỢC TÍNH BẰNG "Days", cẩn thận nhầm với trường độ dài video.
 
 HTML:
 {html}
