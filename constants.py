@@ -77,6 +77,11 @@ class Selectors:
     EMPTY_STATE_CONTAINER = "div.ant-empty"
     EMPTY_STATE_DESCRIPTION = "div.ant-empty-description"
 
+    # --- TOP IMPRESSION ---
+    TOP_CREATIVE_INPUT = "div.ant-select:has(#filter_popularity_tag)"
+    TOP_1_PERCENT_OPTION = 'div.ant-select-item-option[title="Top 1% Creative Score"]'
+    TOP_10_PERCENT_OPTION = 'div.ant-select-item-option[title="Top 10% Creative Score"]'
+
 # --- AUTO-RECOVERY ---
 RELOGIN_COOLDOWN_SECONDS = 60
 
@@ -84,6 +89,7 @@ RELOGIN_COOLDOWN_SECONDS = 60
 TIME_FILTERS = ["7 Days", "30 Days", "90 Days", "1 Year"]
 SORT_FILTERS = ["Latest Creatives", "Last Seen", "Impression"]
 DROPDOWN_SORTS = ["Related Ads", "Popularity", "Like", "Comment", "Share"]
+TOP_IMPRESSION_FILTERS = ["Top 1%", "Top 10%"]
 
 # --- GEMINI PROMPT ---
 GEMINI_PROMPT_TEMPLATE = """

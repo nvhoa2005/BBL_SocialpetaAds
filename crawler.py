@@ -52,6 +52,7 @@ def read_config_json(filepath):
             "networks": task.get("networks", ["youtube"]),
             "time_val": time_val,
             "sort_val": sort_val,
+            "top_impression": task.get("top_impression", []),
             "max_ads": int(task.get("max_ads", 100)),
             "start_page": int(task.get("start_page", 1)),
             "crawl_page_id": task.get("crawl_page_id", False)
@@ -379,13 +380,14 @@ def run(api_tasks=None, custom_run_id=None, auto_resume=False, time_to_resume=60
                 break
 
             app_id, time_val, sort_val = task["app_id"], task["time_val"], task["sort_val"]
+            top_impression_list = task.get("top_impression", [])
             max_ads, start_page = task["max_ads"], task["start_page"]
             crawl_page_id = task.get("crawl_page_id", False)
             
             app_data = next((a for a in bundle_data["apps"] if a["app_id"] == app_id), None)
             if not app_data:
                 app_data = {
-                    "app_id": app_id, "filters_applied": [time_val, sort_val],
+                    "app_id": app_id, "filters_applied": [time_val, sort_val] + top_impression_list,
                     "scrape_statistics": {"requested_max_ads": max_ads, "total_attempted_ads": 0, "successfully_scraped_ads": 0, "success_rate": "0/0", "report": ""},
                     "last_stopped_page": start_page,
                     "last_processed_chunk_start": 0,
@@ -646,6 +648,27 @@ def run(api_tasks=None, custom_run_id=None, auto_resume=False, time_to_resume=60
                 else:
                     sort_option = page.get_by_text(sort_val, exact=True)
                     if sort_option.count() > 0: human_click(sort_option.first)
+
+                human_retreat_mouse(page)
+                human_wait_with_jitter(page, 0.5, 1.0)
+
+                if top_impression_list:
+                    try:
+                        log.info(f"Đang thiết lập bộ lọc Top Creative: {top_impression_list}")
+                        top_input = page.locator(Selectors.TOP_CREATIVE_INPUT)
+                        human_click(top_input) # Mở dropdown
+                        human_wait_with_jitter(page, 0.5, 1.2) # Chờ render danh sách
+                        
+                        for val in ["Top 1%", "Top 10%"]:
+                            if val in top_impression_list:
+                                selector = Selectors.TOP_1_PERCENT_OPTION if val == "Top 1%" else Selectors.TOP_10_PERCENT_OPTION
+                                option_btn = page.locator(selector).first
+                                if option_btn.count() > 0:
+                                    log.info(f"   -> Đang chọn option: {val}")
+                                    human_click(option_btn)
+                                    human_wait_with_jitter(page, 0.5, 1.0)
+                    except Exception as e:
+                        log.error(f"Lỗi khi tương tác với bộ lọc Top Creative: {e}")
 
                 human_retreat_mouse(page)
                 human_wait_with_jitter(page, 0.5, 1.0)

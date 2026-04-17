@@ -11,12 +11,12 @@ from pydantic import BaseModel, Field
 from typing import List, Optional
 
 from crawler import run as run_crawler
-from constants import TIME_FILTERS, SORT_FILTERS, DROPDOWN_SORTS
 from custom_logger import log
 
 from parse_with_gemini import process_bundle
 from export_excel import json_to_excel, export_page_id_excel
 from constants import DEFAULT_MODEL
+from constants import TIME_FILTERS, SORT_FILTERS, DROPDOWN_SORTS, TOP_IMPRESSION_FILTERS
 
 app = FastAPI(title="SocialPeta Crawler API")
 
@@ -27,6 +27,7 @@ class CrawlRequest(BaseModel):
     networks: List[str] = Field(default=["youtube"], description="Mảng nền tảng muốn cào. VD: ['tiktok', 'youtube']")
     time_val: str = Field(default="90 Days")
     sort_val: str = Field(default="Impression")
+    top_impression: List[str] = Field(default_factory=list, description="Danh sách bộ lọc Top Creative (VD: ['Top 1%', 'Top 10%'])")
     max_ads: int = Field(default=100)
     start_page: int = Field(default=1)
     auto_resume_crawl_if_fail: bool = Field(default=True)
@@ -104,10 +105,16 @@ def background_crawl_task(task_id: str, req: CrawlRequest):
         time_val = req.time_val if req.time_val in TIME_FILTERS else "90 Days"
         sort_val = req.sort_val if req.sort_val in SORT_FILTERS + DROPDOWN_SORTS else "Impression"
         
+        valid_top_impressions = []
+        if req.top_impression:
+            normalized_inputs = [str(item).strip().title() for item in req.top_impression]
+            valid_top_impressions = [item for item in normalized_inputs if item in TOP_IMPRESSION_FILTERS]
+
         tasks_list = [{
             "app_id": aid, "networks": req.networks, "time_val": time_val,
             "sort_val": sort_val, "max_ads": req.max_ads, "start_page": req.start_page,
-            "crawl_page_id": req.crawl_page_id
+            "crawl_page_id": req.crawl_page_id,
+            "top_impression": valid_top_impressions
         } for aid in app_ids]
             
         # Gọi crawler, lúc này run_crawler sẽ trả về dictionary
