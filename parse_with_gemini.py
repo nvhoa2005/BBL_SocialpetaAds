@@ -41,20 +41,20 @@ class AdCreativeData(BaseModel):
     
     headline: Optional[str] = Field(description="Tiêu đề của quảng cáo")
     headline_language: Optional[str] = Field(description="Ngôn ngữ của headline vừa lấy được(VD: en, vi, zh...)")
-    headline_translated: Optional[str] = Field(description="Dịch sang Tiếng Việt phần headline vừa lấy được")
+    headline_translated: Optional[str] = Field(description="Dịch sang TIẾNG VIỆT phần headline vừa lấy được")
     
     description: Optional[str] = Field(description="Mô tả nội dung của quảng cáo")
     description_language: Optional[str] = Field(description="Ngôn ngữ của description vừa lấy được (VD: en, vi...)")
-    description_translated: Optional[str] = Field(description="Dịch sang Tiếng Việt phần description vừa lấy được")
+    description_translated: Optional[str] = Field(description="Dịch sang TIẾNG VIỆT phần description vừa lấy được")
 
     transcript: Optional[str] = Field(description="Nội dung lời thoại video. Nếu không có thì để null.")
     transcript_language: Optional[str] = Field(description="Ngôn ngữ của transcript vừa lấy được. Nếu không có thì để null.")
-    transcript_translated: Optional[str] = Field(description="Dịch sang Tiếng Việt phần transcript vừa lấy được")
+    transcript_translated: Optional[str] = Field(description="Dịch sang TIẾNG VIỆT phần transcript vừa lấy được")
 
 class TranscriptTranslationData(BaseModel):
     transcript: Optional[str] = Field(description="Nội dung lời thoại gốc nghe được. Nếu không có tiếng người, để null.")
     transcript_language: Optional[str] = Field(description="Ngôn ngữ của transcript (VD: en, vi...).")
-    transcript_translated: Optional[str] = Field(description="Dịch sang Tiếng Việt phần transcript vừa lấy được")
+    transcript_translated: Optional[str] = Field(description="Dịch sang TIẾNG VIỆT phần transcript vừa lấy được")
 # ==========================================
 # 2. API HỖ TRỢ & DATABASE CONNECTION
 # ==========================================
