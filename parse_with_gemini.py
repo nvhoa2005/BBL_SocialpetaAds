@@ -102,7 +102,7 @@ def process_media_for_transcript(video_url: str) -> dict:
 
             # 4. Gọi Model
             model = genai.GenerativeModel("gemini-2.5-flash-lite")
-            prompt = "Dưới đây là một đoạn âm thanh. Hãy nghe, chép lại lời thoại gốc (transcript), xác định ngôn ngữ gốc và dịch toàn bộ nội dung sang tiếng Việt. Nếu chỉ có tiếng nhạc hoặc tạp âm mà không có lời thoại con người, hãy trả về toàn bộ là null."
+            prompt = "Dưới đây là một đoạn âm thanh. Hãy nghe, chép lại lời thoại gốc (transcript), xác định NGÔN NGỮ GỐC của nó và DỊCH toàn bộ nội dung sang TIẾNG VIỆT. Nếu chỉ có tiếng nhạc hoặc tạp âm mà không có lời thoại con người, hãy trả về toàn bộ là null. Nếu có transcript thì các trường transcript_language và transcript_translated KHÔNG ĐƯỢC PHÉP đặt là null"
             
             safety_settings = {
                 HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
