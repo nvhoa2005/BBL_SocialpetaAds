@@ -14,6 +14,8 @@ import google.generativeai as genai
 from google.generativeai.types import GenerationConfig, HarmCategory, HarmBlockThreshold
 from pydantic import BaseModel, Field, ValidationError
 from dotenv import load_dotenv
+from bs4 import BeautifulSoup, Comment
+import logging
 
 from custom_logger import log
 from constants import GEMINI_PROMPT_TEMPLATE, DEFAULT_MODEL
@@ -55,6 +57,43 @@ class TranscriptTranslationData(BaseModel):
     transcript: Optional[str] = Field(description="Nội dung lời thoại gốc nghe được. Nếu không có tiếng người, để null.")
     transcript_language: Optional[str] = Field(description="Ngôn ngữ của transcript (VD: en, vi...).")
     transcript_translated: Optional[str] = Field(description="Dịch sang TIẾNG VIỆT phần transcript vừa lấy được")
+
+
+def preprocess_html_for_llm(raw_html: str) -> str:
+    """
+    Làm sạch HTML tuyệt đối an toàn. 
+    Giữ lại nội dung text và các thuộc tính cần thiết để LLM trích xuất.
+    """
+    if not raw_html or not isinstance(raw_html, str):
+        return ""
+        
+    try:
+        soup = BeautifulSoup(raw_html, 'lxml')
+
+        unwanted_tags = [
+            'script', 'style', 'noscript', 'meta', 'link', 'iframe', 
+            'svg', 'path', 'g', 'polygon', 'rect', 'circle', 'line', 'polyline'
+        ]
+        for tag in soup.find_all(unwanted_tags):
+            tag.decompose()
+
+        for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
+            comment.extract()
+
+        allowed_attributes = {'href', 'src', 'poster', 'type', 'title', 'alt'}
+        
+        for tag in soup.find_all(True):
+            tag.attrs = {k: v for k, v in tag.attrs.items() if k.lower() in allowed_attributes}
+
+        cleaned_html = str(soup)
+        cleaned_html = " ".join(cleaned_html.split())
+        
+        return cleaned_html
+
+    except Exception as e:
+        log.error(f"       -> [LỖI TIỀN XỬ LÝ HTML] {e}. Trả về HTML gốc để dự phòng.")
+        return " ".join(raw_html.split())
+
 # ==========================================
 # 2. API HỖ TRỢ & DATABASE CONNECTION
 # ==========================================
@@ -209,7 +248,8 @@ def get_db_connection():
 #         return {"transcript_language": None, "transcript_translated": None}
 
 def parse_html_with_gemini(html: str, model_name: str) -> dict:
-    prompt = GEMINI_PROMPT_TEMPLATE.format(html=html)
+    cleaned_html = preprocess_html_for_llm(html)
+    prompt = GEMINI_PROMPT_TEMPLATE.format(html=cleaned_html)
     model = genai.GenerativeModel(model_name)
     safety_settings = {
         HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,

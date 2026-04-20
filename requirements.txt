@@ -12,3 +12,5 @@ python-dotenv
 pytubefix
 pandas 
 openpyxl
+beautifulsoup4 
+lxml
