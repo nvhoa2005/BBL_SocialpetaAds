@@ -152,11 +152,11 @@ def background_crawl_task(task_id: str, req: CrawlRequest):
         if is_page_id_run:
             excel_path = export_page_id_excel(raw_file_path)
         else:
-            api_key = os.getenv("GEMINI_API_KEY")
-            if not api_key:
-                raise Exception("Thiếu GEMINI_API_KEY trong file .env")
+            if not os.getenv("GCP_PROJECT_ID") or not os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+                raise Exception("Thiếu cấu hình GCP_PROJECT_ID hoặc GOOGLE_APPLICATION_CREDENTIALS trong file .env")
                 
-            final_json_path = process_bundle(raw_file_path, api_key, DEFAULT_MODEL, no_transcript=req.no_transcript)
+            final_json_path = process_bundle(raw_file_path, DEFAULT_MODEL, no_transcript=req.no_transcript)
+            
             if final_json_path:
                 excel_path = json_to_excel(final_json_path)
             else:
