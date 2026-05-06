@@ -35,7 +35,7 @@ vertexai.init(
 # 1. ĐỊNH NGHĨA LƯỚI LỌC PYDANTIC (SCHEMA)
 # ==========================================
 class AdCreativeData(BaseModel):
-    video_url: Optional[str] = Field(description="Trích xuất link Media từ HTML. Ưu tiên 1: Link file video (thường có đuôi .mp4 nằm trong thẻ <video> hoặc <source>). Ưu tiên 2: Nếu không có video, lấy link hình ảnh. Nếu không có cả hai, bắt buộc để null.")
+    video_url: Optional[str] = Field(description="Trích xuất link Media từ HTML. Ưu tiên 1: Link file video (thường có đuôi .mp4 nằm trong src=). Ưu tiên 2: Nếu không có video, lấy link hình ảnh. Nếu không có cả hai, bắt buộc để null.")
     ad_id: Optional[str] = Field(description="Trích xuất từ tham số 'id=' trong link")
     original_post_link: Optional[str] = Field(description="Đường link gốc của bài post")
     link_youtube: Optional[str] = Field(description="Link youtube nếu có")

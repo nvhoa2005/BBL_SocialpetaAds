@@ -99,7 +99,8 @@ Lưu ý trường original_post_link 99% không có chữ "socialpeta" ở trong
 Ví dụ original_post_link: https://www.youtube.com/watch?v=lmWSuTOZxb4
 Lưu ý khi xuất video_url từ HTML, ĐẶC BIỆT CẨN THẬN phân biệt giữa video_url và original_post_link, hai cái đó là hoàn toàn khác nhau, link media thường có "sp2cdn" ở trong đường dẫn. ƯU TIÊN 1: Link file video (thường có đuôi .mp4). Ưu tiên 2: Nếu không có video, lấy link hình ảnh (thường có đuôi jpg, png)
 Ví dụ video_url: https://sp2cdn-idea-global.zingfront.com/sp_opera/9f82e3179a389e160c72d2c156385b0c.mp4
-Lưu ý video_url 99% CÓ ĐUÔI .mp4, nếu tìm không thấy thì mới lấy hình ảnh có đuôi .jpg và .png
+Lưu ý video_url 99% CÓ ĐUÔI .mp4 và được đặt sau từ "src=", nếu tìm không thấy thì mới lấy hình ảnh có đuôi .jpg và .png
+ĐẶC BIỆT LƯU Ý TRƯỜNG VIDEO URL RẤT QUAN TRỌNG, PHẢI LẤY THẬT CHÍNH XÁC, HẠN CHẾ TỐI THIỂU SAI SÓT
 Lưu ý top 1% creative và top 10% creative nếu không có thì là false, headline thường có hiệu ứng khi hover vào.
 Lưu ý trường duration thì nó ĐƯỢC TÍNH BẰNG "Days", cẩn thận nhầm với trường độ dài video.
 
