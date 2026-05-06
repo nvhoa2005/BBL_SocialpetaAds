@@ -183,7 +183,7 @@ def process_media_for_transcript(video_url: str) -> dict:
             except Exception as e:
                 if "429" in str(e) or "Resource exhausted" in str(e):
                     if attempt < max_retries - 1:
-                        wait_time = 5 * (attempt + 1)
+                        wait_time = 10 * (attempt + 1)
                         log.warning(f"       -> [VERTEX AI AUDIO] Bị Rate Limit (429). Đang chờ {wait_time}s để thử lại (Lần {attempt + 1}/{max_retries})...")
                         time.sleep(wait_time)
                     else:
@@ -252,7 +252,7 @@ def parse_html_with_gemini(html: str, model_name: str) -> dict:
         except Exception as e:
             if "429" in str(e) or "Resource exhausted" in str(e):
                 if attempt < max_retries - 1:
-                    wait_time = 5 * (attempt + 1) # Lần 1: 5s, Lần 2: 10s...
+                    wait_time = 10 * (attempt + 1) # Lần 1: 10s, Lần 2: 20s...
                     log.warning(f"       -> [VERTEX AI HTML] Bị Rate Limit (429). Đang chờ {wait_time}s để thử lại (Lần {attempt + 1}/{max_retries})...")
                     time.sleep(wait_time)
                 else:
