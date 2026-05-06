@@ -167,16 +167,30 @@ def process_media_for_transcript(video_url: str) -> dict:
             HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
         }
 
-        response = model.generate_content(
-            [prompt, audio_part], 
-            safety_settings=safety_settings,
-            generation_config=GenerationConfig(
-                temperature=0.1,
-                response_mime_type="application/json",
-                response_schema=clean_pydantic_schema_for_vertex(TranscriptTranslationData.model_json_schema()), 
-            )
-        )
-        
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                response = model.generate_content(
+                    [prompt, audio_part], 
+                    safety_settings=safety_settings,
+                    generation_config=GenerationConfig(
+                        temperature=0.1,
+                        response_mime_type="application/json",
+                        response_schema=clean_pydantic_schema_for_vertex(TranscriptTranslationData.model_json_schema()), 
+                    )
+                )
+                break  # Thoát vòng lặp nếu thành công
+            except Exception as e:
+                if "429" in str(e) or "Resource exhausted" in str(e):
+                    if attempt < max_retries - 1:
+                        wait_time = 5 * (attempt + 1)
+                        log.warning(f"       -> [VERTEX AI AUDIO] Bị Rate Limit (429). Đang chờ {wait_time}s để thử lại (Lần {attempt + 1}/{max_retries})...")
+                        time.sleep(wait_time)
+                    else:
+                        raise Exception(f"Lỗi 429 Audio: Đã thử lại {max_retries} lần vẫn thất bại.")
+                else:
+                    raise e
+
         parsed_data = TranscriptTranslationData.model_validate_json(response.text).model_dump()
         if not parsed_data.get("transcript") or str(parsed_data.get("transcript")).lower() == 'null':
             result["transcript"] = "Video không có transcript"
@@ -222,15 +236,31 @@ def parse_html_with_gemini(html: str, model_name: str) -> dict:
         HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
     }
     
-    response = model.generate_content(
-        prompt,
-        safety_settings=safety_settings,
-        generation_config=GenerationConfig(
-            temperature=0.1, 
-            response_mime_type="application/json",
-            response_schema=clean_pydantic_schema_for_vertex(AdCreativeData.model_json_schema()), 
-        )
-    )
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = model.generate_content(
+                prompt,
+                safety_settings=safety_settings,
+                generation_config=GenerationConfig(
+                    temperature=0.1, 
+                    response_mime_type="application/json",
+                    response_schema=clean_pydantic_schema_for_vertex(AdCreativeData.model_json_schema()), 
+                )
+            )
+            break  # Nếu thành công, thoát khỏi vòng lặp ngay
+        except Exception as e:
+            if "429" in str(e) or "Resource exhausted" in str(e):
+                if attempt < max_retries - 1:
+                    wait_time = 5 * (attempt + 1) # Lần 1: 5s, Lần 2: 10s...
+                    log.warning(f"       -> [VERTEX AI HTML] Bị Rate Limit (429). Đang chờ {wait_time}s để thử lại (Lần {attempt + 1}/{max_retries})...")
+                    time.sleep(wait_time)
+                else:
+                    raise ValueError(f"Lỗi 429: Đã thử lại {max_retries} lần nhưng hệ thống vẫn từ chối.")
+            else:
+                # Nếu là lỗi khác không phải 429 thì raise luôn để check
+                raise ValueError(f"Lỗi hệ thống khi parse: {e}")
+
     try:
         raw_data = json.loads(response.text)
         for key in AdCreativeData.model_fields.keys():
