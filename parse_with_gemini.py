@@ -17,13 +17,15 @@ from bs4 import BeautifulSoup, Comment
 from custom_logger import log
 from constants import GEMINI_PROMPT_TEMPLATE, DEFAULT_MODEL
 
-# IMPORT ĐÚNG CỦA VERTEX AI
+from openai import OpenAI
+
 import vertexai
 from vertexai.generative_models import GenerativeModel, GenerationConfig, HarmCategory, HarmBlockThreshold, Part
 
 # from vertexai.generative_models import Type, Schema
 
 load_dotenv()
+USE_LOCAL_LLM = os.getenv("USE_LOCAL_LLM", "False").lower() == "true"
 
 # Khởi tạo Vertex AI (Sử dụng Service Account từ biến môi trường GOOGLE_APPLICATION_CREDENTIALS)
 vertexai.init(
@@ -273,6 +275,36 @@ def parse_html_with_gemini(html: str, model_name: str) -> dict:
     except Exception as e:
         raise ValueError(f"Lỗi hệ thống khi parse: {e}")
 
+def parse_html_with_local_llm(html: str) -> dict:
+    base_url = os.getenv("LOCAL_LLM_BASE_URL", "http://localhost:11434/v1")
+    api_key = os.getenv("LOCAL_LLM_API_KEY", "empty")
+    local_model = os.getenv("LOCAL_LLM_MODEL", "gemma4:26b")
+    timeout_seconds = float(os.getenv("LOCAL_LLM_TIMEOUT", 300.0))
+
+    try:
+        client = OpenAI(
+            base_url=base_url,
+            api_key=api_key,
+            timeout=timeout_seconds
+        )
+
+        cleaned_html = preprocess_html_for_llm(html)
+        prompt = GEMINI_PROMPT_TEMPLATE.format(html=cleaned_html)
+
+        completion = client.beta.chat.completions.parse(
+            model=local_model,
+            messages=[
+                {"role": "user", "content": prompt}
+            ],
+            response_format=AdCreativeData,
+        )
+
+        parsed_data = completion.choices[0].message.parsed
+        return parsed_data.model_dump()
+
+    except Exception as e:
+        raise ValueError(f"Local LLM thất bại: {e}")
+
 # ==========================================
 # 3. LUỒNG CHẠY BÓC TÁCH BUNDLE (MAIN)
 # ==========================================
@@ -336,7 +368,26 @@ def process_bundle(input_filepath: str, model_name: str, no_transcript: bool = F
                     log.warning("     [BỎ QUA] HTML rỗng.")
                 else:
                     try:
-                        gemini_html_data = parse_html_with_gemini(raw_html, model_name)
+                        gemini_html_data = None
+                        if USE_LOCAL_LLM:
+                            try:
+                                log.info("       -> [LỚP 1] Đang thử bóc tách HTML bằng Local LLM...")
+                                gemini_html_data = parse_html_with_local_llm(raw_html)
+                                log.info("       -> [LỚP 1] Bóc tách bằng Local LLM THÀNH CÔNG.")
+                                
+                            except Exception as local_e:
+                                log.warning(f"       -> [CẢNH BÁO LỚP 1] {local_e}")
+                                log.info("       -> [LỚP 2] Đang chuyển hướng (Fallback) sang Vertex AI Gemini...")
+                                
+                                try:
+                                    gemini_html_data = parse_html_with_gemini(raw_html, model_name)
+                                    log.info("       -> [LỚP 2] Bóc tách bằng Vertex AI THÀNH CÔNG.")
+                                except Exception as gemini_e:
+                                    raise ValueError(f"Cả Local LLM và Vertex AI đều thất bại. Lỗi cuối: {gemini_e}")
+                        else:
+                            log.info("       -> Đang chuyển hướng sang Vertex AI Gemini...")
+                            gemini_html_data = parse_html_with_gemini(raw_html, model_name)
+                            log.info("       -> Bóc tách bằng Vertex AI THÀNH CÔNG.")
                         clean_video_url = gemini_html_data.get("video_url")
                         if isinstance(clean_video_url, str):
                             clean_video_url = clean_video_url.strip()
